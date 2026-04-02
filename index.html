@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mario's Super Picross Randomizer</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; min-height: 100vh; }
+  .container { max-width: 720px; margin: 0 auto; padding: 24px; }
+  h1 { font-size: 1.6em; margin-bottom: 4px; color: #fff; }
+  .subtitle { color: #888; margin-bottom: 24px; font-size: 0.9em; }
+  .section { background: #16213e; border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+  .section h2 { font-size: 1.1em; margin-bottom: 12px; color: #e94560; }
+  label { display: block; margin-bottom: 8px; font-size: 0.9em; }
+  input[type="file"] { margin-bottom: 8px; }
+  input[type="number"], input[type="text"] { background: #0f3460; border: 1px solid #333; color: #fff; padding: 6px 10px; border-radius: 4px; width: 120px; font-size: 0.95em; }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+  .checkbox-row { display: flex; gap: 20px; flex-wrap: wrap; margin: 8px 0; }
+  .checkbox-row label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  input[type="checkbox"] { accent-color: #e94560; }
+  button { background: #e94560; color: #fff; border: none; padding: 10px 24px; border-radius: 6px; font-size: 1em; cursor: pointer; font-weight: 600; }
+  button:hover { background: #c73650; }
+  button:disabled { background: #555; cursor: not-allowed; }
+  #output { white-space: pre-wrap; font-family: 'Courier New', monospace; font-size: 0.82em; line-height: 1.4; max-height: 500px; overflow-y: auto; background: #0a0a1a; padding: 12px; border-radius: 6px; margin-top: 12px; }
+  .downloads { margin-top: 12px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .downloads a { color: #e94560; text-decoration: none; padding: 6px 14px; border: 1px solid #e94560; border-radius: 4px; font-size: 0.9em; }
+  .downloads a:hover { background: #e94560; color: #fff; }
+  .hash { font-family: monospace; font-size: 0.8em; color: #888; word-break: break-all; margin-top: 8px; }
+  .rom-info { color: #4ecca3; font-size: 0.85em; margin: 4px 0; }
+  .warning { background: #3d1f00; border: 1px solid #e94560; border-radius: 6px; padding: 10px 14px; margin-top: 8px; font-size: 0.85em; color: #ffaa44; display: none; }
+  .known-issues { font-size: 0.82em; color: #999; margin-top: 16px; line-height: 1.5; }
+  .known-issues summary { color: #888; cursor: pointer; font-size: 0.9em; }
+  .known-issues ul { margin: 8px 0 0 20px; }
+  .known-issues li { margin-bottom: 4px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Mario's Super Picross Randomizer</h1>
+  <p class="subtitle">Randomizes all 302 puzzles. Same seed = same puzzles across Python CLI and browser.</p>
+
+  <div class="section">
+    <h2>ROM</h2>
+    <input type="file" id="romFile" accept=".sfc,.smc">
+    <div id="romInfo" class="rom-info"></div>
+  </div>
+
+  <div class="section">
+    <h2>Options</h2>
+    <div class="row">
+      <label>Seed: <input type="number" id="seed" value="42" min="1"></label>
+      <label>Density: <input type="number" id="density" value="0.57" step="0.01" min="0.01" max="0.99" style="width:80px"></label>
+    </div>
+    <div id="densityWarning" class="warning">
+      Low density produces puzzles with sparse, isolated cells. The resulting clues (mostly "1") provide almost no deductive information, making many puzzles impossible to solve without guessing. The default of 0.57 was tuned across 302,000 puzzles to virtually eliminate this.
+    </div>
+    <div class="checkbox-row">
+      <label><input type="checkbox" id="randomGrids" checked> Random grids</label>
+      <label><input type="checkbox" id="easy" checked> Easy mode</label>
+      <label><input type="checkbox" id="unlockAll" checked> Unlock all</label>
+      <label><input type="checkbox" id="noTimer" checked> No timer</label>
+      <label><input type="checkbox" id="analyze"> Analyze difficulty</label>
+    </div>
+  </div>
+
+  <div class="section">
+    <button id="generate" disabled>Generate</button>
+    <div class="downloads" id="downloads"></div>
+    <div class="hash" id="hashInfo"></div>
+    <div id="output"></div>
+  </div>
+
+  <details class="known-issues" id="knownIssues" open>
+    <summary>Known Issues</summary>
+    <ul>
+      <li><strong>First boot with Unlock All:</strong> The level select cursor will auto-scroll to the bottom of Mario's list. Press Left to switch to Wario, then Right to switch back. All levels work normally after that, including across future sessions.</li>
+      <li><strong>BGM "Off" option:</strong> Selecting "Off" for background music will revert to BGM 1 the next time the game reads the setting. BGM 1-4 selections persist normally.</li>
+      <li><strong>Completion markers:</strong> With Unlock All, stages may not display the correct completion hammers. All stages are playable regardless.</li>
+    </ul>
+  </details>
+</div>
+
+<script>
+"use strict";
+
+// ============================================================
+// Mersenne Twister (MT19937) — matches Python's random.Random
+// ============================================================
+const N = 624, M = 397;
+const MATRIX_A = 0x9908b0df;
+const UPPER_MASK = 0x80000000;
+const LOWER_MASK = 0x7fffffff;
+
+class MT19937 {
+  constructor() { this.mt = new Uint32Array(N); this.mti = N + 1; }
+
+  initGenrand(s) {
+    const mt = this.mt;
+    mt[0] = s >>> 0;
+    for (let i = 1; i < N; i++) {
+      mt[i] = (Math.imul(1812433253, mt[i-1] ^ (mt[i-1] >>> 30)) + i) >>> 0;
+    }
+    this.mti = N;
+  }
+
+  initByArray(initKey) {
+    this.initGenrand(19650218);
+    const mt = this.mt;
+    const keyLen = initKey.length;
+    let i = 1, j = 0;
+    let k = N > keyLen ? N : keyLen;
+    for (; k > 0; k--) {
+      mt[i] = ((mt[i] ^ Math.imul(mt[i-1] ^ (mt[i-1] >>> 30), 1664525)) + initKey[j] + j) >>> 0;
+      i++; j++;
+      if (i >= N) { mt[0] = mt[N-1]; i = 1; }
+      if (j >= keyLen) j = 0;
+    }
+    for (k = N - 1; k > 0; k--) {
+      mt[i] = ((mt[i] ^ Math.imul(mt[i-1] ^ (mt[i-1] >>> 30), 1566083941)) - i) >>> 0;
+      i++;
+      if (i >= N) { mt[0] = mt[N-1]; i = 1; }
+    }
+    mt[0] = UPPER_MASK;
+    this.mti = N;
+  }
+
+  genrandInt32() {
+    const mt = this.mt;
+    const mag01 = [0, MATRIX_A];
+    if (this.mti >= N) {
+      let kk, y;
+      for (kk = 0; kk < N - M; kk++) {
+        y = (mt[kk] & UPPER_MASK) | (mt[kk+1] & LOWER_MASK);
+        mt[kk] = mt[kk+M] ^ (y >>> 1) ^ mag01[y & 1];
+      }
+      for (; kk < N - 1; kk++) {
+        y = (mt[kk] & UPPER_MASK) | (mt[kk+1] & LOWER_MASK);
+        mt[kk] = mt[kk+(M-N)] ^ (y >>> 1) ^ mag01[y & 1];
+      }
+      y = (mt[N-1] & UPPER_MASK) | (mt[0] & LOWER_MASK);
+      mt[N-1] = mt[M-1] ^ (y >>> 1) ^ mag01[y & 1];
+      this.mti = 0;
+    }
+    let y = mt[this.mti++];
+    y ^= y >>> 11;
+    y ^= (y << 7) & 0x9d2c5680;
+    y ^= (y << 15) & 0xefc60000;
+    y ^= y >>> 18;
+    return y >>> 0;
+  }
+}
+
+// Python-compatible Random class
+class PythonRandom {
+  constructor(seed) {
+    this._mt = new MT19937();
+    this.seed(seed);
+  }
+
+  seed(n) {
+    // Python converts integer seed to array of 32-bit words
+    const key = [];
+    if (n === 0) { key.push(0); }
+    else {
+      let v = n;
+      while (v > 0) { key.push(v & 0xffffffff); v = Math.floor(v / 0x100000000); }
+    }
+    this._mt.initByArray(key);
+  }
+
+  random() {
+    const a = this._mt.genrandInt32() >>> 5;
+    const b = this._mt.genrandInt32() >>> 6;
+    return (a * 67108864.0 + b) / 9007199254740992.0;
+  }
+
+  getrandbits(k) {
+    if (k <= 0) return 0;
+    if (k <= 32) return this._mt.genrandInt32() >>> (32 - k);
+    // k > 32: generate multiple words
+    let result = 0n;
+    let bits = k;
+    while (bits > 0) {
+      const take = Math.min(bits, 32);
+      const word = this._mt.genrandInt32() >>> (32 - take);
+      result = (result << BigInt(take)) | BigInt(word);
+      bits -= take;
+    }
+    return Number(result);
+  }
+
+  _randbelow(n) {
+    if (n <= 0) return 0;
+    const k = 32 - Math.clz32(n);
+    let r = this.getrandbits(k);
+    while (r >= n) r = this.getrandbits(k);
+    return r;
+  }
+
+  randint(a, b) { return a + this._randbelow(b - a + 1); }
+
+  uniform(a, b) { return a + (b - a) * this.random(); }
+
+  shuffle(arr) {
+    for (let i = arr.length - 1; i >= 1; i--) {
+      const j = this._randbelow(i + 1);
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+  }
+
+  choices(population, weights, k) {
+    const cumWeights = [];
+    let sum = 0;
+    for (const w of weights) { sum += w; cumWeights.push(sum); }
+    const total = cumWeights[cumWeights.length - 1] + 0.0;
+    const hi = cumWeights.length;
+    const result = [];
+    for (let i = 0; i < k; i++) {
+      const r = this.random() * total;
+      // bisect_right
+      let lo = 0, h = hi;
+      while (lo < h) {
+        const mid = (lo + h) >>> 1;
+        if (r < cumWeights[mid]) h = mid;
+        else lo = mid + 1;
+      }
+      result.push(population[lo]);
+    }
+    return result;
+  }
+}
+
+
+// ============================================================
+// ROM Data Parser (port of rom_data.py)
+// ============================================================
+const POINTER_TABLE_OFFSET = 0xC931;
+const POINTER_TABLE_ENTRIES = 302;
+const GRID_SIZE_MAP = { 0: [5,5], 1: [10,10], 2: [15,15], 3: [20,20], 6: [25,20] };
+
+function snesToFileOffset(bank, hi, lo) {
+  return ((bank - 0xC0) << 16) | (hi << 8) | lo;
+}
+
+function readPointerTable(rom) {
+  const ptrs = [];
+  for (let i = 0; i < POINTER_TABLE_ENTRIES; i++) {
+    const off = POINTER_TABLE_OFFSET + i * 4;
+    ptrs.push(snesToFileOffset(rom[off+2], rom[off+1], rom[off]));
+  }
+  return ptrs;
+}
+
+function parseTaggedBlocks(rom, fileOffset) {
+  const blocks = {};
+  let pos = fileOffset;
+  while (pos < rom.length) {
+    const tag = rom[pos];
+    if (tag === 0xFF) break;
+    const skip = rom[pos+1] | (rom[pos+2] << 8);
+    const payloadOffset = pos + 3;
+    const payloadSize = skip - 2;
+    if (!blocks[tag]) blocks[tag] = [];
+    blocks[tag].push([payloadOffset, payloadSize]);
+    pos = (pos + 1) + skip;
+  }
+  return blocks;
+}
+
+function decodeSolutionBitfield(rom, offset, size, cols, rows) {
+  const grid = [];
+  let bitIndex = 0;
+  for (let r = 0; r < rows; r++) {
+    const row = [];
+    for (let c = 0; c < cols; c++) {
+      const byteIdx = bitIndex >> 3;
+      const bitPos = bitIndex & 7;
+      row.push(byteIdx < size ? ((rom[offset + byteIdx] >> bitPos) & 1) === 1 : false);
+      bitIndex++;
+    }
+    grid.push(row);
+  }
+  return grid;
+}
+
+function encodeSolutionBitfield(grid, cols, rows) {
+  const numBytes = Math.ceil((cols * rows) / 8);
+  const data = new Uint8Array(numBytes);
+  let bitIndex = 0;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (grid[r][c]) data[bitIndex >> 3] |= 1 << (bitIndex & 7);
+      bitIndex++;
+    }
+  }
+  return data;
+}
+
+function getPuzzleModeAndLevel(index) {
+  if (index < 145) {
+    let remaining = index;
+    for (let level = 0; level < 13; level++) {
+      const count = level < 12 ? 12 : 1;
+      if (remaining < count) return ["mario", level, remaining];
+      remaining -= count;
+    }
+  } else {
+    let remaining = index - 145;
+    for (let level = 0; level < 13; level++) {
+      const count = level < 11 ? 12 : level === 11 ? 8 : 17;
+      if (remaining < count) return ["wario", level, remaining];
+      remaining -= count;
+    }
+  }
+  return ["unknown", 0, index];
+}
+
+function readAllPuzzles(rom) {
+  const pointers = readPointerTable(rom);
+  const puzzles = [];
+  for (let i = 0; i < pointers.length; i++) {
+    const blocks = parseTaggedBlocks(rom, pointers[i]);
+    if (!blocks[0] || !blocks[1]) continue;
+    const [metaOff] = blocks[0][0];
+    const sizeCode = rom[metaOff];
+    if (!GRID_SIZE_MAP[sizeCode]) continue;
+    const [cols, rows] = GRID_SIZE_MAP[sizeCode];
+    const [solOff, solSize] = blocks[1][0];
+    const grid = decodeSolutionBitfield(rom, solOff, solSize, cols, rows);
+    const [mode, level, position] = getPuzzleModeAndLevel(i);
+    puzzles.push({ index: i, cols, rows, grid, romOffset: solOff, bitfieldSize: solSize,
+                   mode, level, position, sizeName: `${cols}x${rows}` });
+  }
+  return puzzles;
+}
+
+function writePuzzleSolution(romData, puzzle, newGrid) {
+  const encoded = encodeSolutionBitfield(newGrid, puzzle.cols, puzzle.rows);
+  for (let i = 0; i < puzzle.bitfieldSize; i++) romData[puzzle.romOffset + i] = encoded[i];
+}
+
+function fixRomChecksum(romData) {
+  romData[0xFFDC] = 0; romData[0xFFDD] = 0; romData[0xFFDE] = 0; romData[0xFFDF] = 0;
+  let checksum = 0;
+  for (let i = 0; i < romData.length; i++) checksum = (checksum + romData[i]) & 0xFFFF;
+  const complement = checksum ^ 0xFFFF;
+  romData[0xFFDC] = complement & 0xFF; romData[0xFFDD] = (complement >> 8) & 0xFF;
+  romData[0xFFDE] = checksum & 0xFF; romData[0xFFDF] = (checksum >> 8) & 0xFF;
+}
+
+
+// ============================================================
+// Grid Generation (port of rom_randomizer.py)
+// ============================================================
+function generateRunGrid(cols, rows, density, rng) {
+  const grid = [];
+  for (let r = 0; r < rows; r++) {
+    let row = new Array(cols).fill(false);
+    const roll = rng.random();
+    if (roll < 0.06) {
+      // empty row
+    } else if (roll < 0.12) {
+      row = new Array(cols).fill(true);
+    } else {
+      let rowDensity = density + rng.uniform(-0.20, 0.20);
+      rowDensity = Math.max(0.10, Math.min(0.85, rowDensity));
+      const filledTarget = Math.max(1, Math.floor(cols * rowDensity));
+      let numRuns = rng.choices([1, 2, 3], [3, 5, 2], 1)[0];
+      if (cols < 10) numRuns = Math.min(numRuns, 2);
+      const runs = [];
+      let remaining = filledTarget;
+      for (let i = 0; i < numRuns; i++) {
+        if (remaining <= 0) break;
+        let runLen;
+        if (i === numRuns - 1) {
+          runLen = remaining;
+        } else {
+          const minLen = Math.max(1, Math.floor(remaining / (numRuns - i) / 2));
+          const maxLen = Math.max(minLen, remaining - (numRuns - i - 1));
+          runLen = rng.randint(minLen, maxLen);
+        }
+        runs.push(Math.max(1, runLen));
+        remaining -= runLen;
+      }
+      rng.shuffle(runs);
+      const totalRun = runs.reduce((a, b) => a + b, 0);
+      const totalGaps = Math.max(0, cols - totalRun);
+      if (runs.length > 0) {
+        const gapSlots = runs.length + 1;
+        const gaps = new Array(gapSlots).fill(0);
+        for (let g = 0; g < totalGaps; g++) gaps[rng.randint(0, gapSlots - 1)]++;
+        let pos = gaps[0];
+        for (let idx = 0; idx < runs.length; idx++) {
+          for (let c = pos; c < Math.min(pos + runs[idx], cols); c++) row[c] = true;
+          pos += runs[idx] + gaps[idx + 1];
+        }
+      }
+    }
+    grid.push(row);
+  }
+  return grid;
+}
+
+function generateEasyGrid(cols, rows, density, rng) {
+  const hGrid = generateRunGrid(cols, rows, density, rng);
+  const vGridT = generateRunGrid(rows, cols, density * 0.3, rng);
+  const grid = [];
+  for (let r = 0; r < rows; r++) {
+    const row = [];
+    for (let c = 0; c < cols; c++) row.push(hGrid[r][c] || vGridT[c][r]);
+    grid.push(row);
+  }
+  return grid;
+}
+
+function generateRandomGrid(cols, rows, density, rng, easy) {
+  let grid;
+  if (easy) {
+    grid = generateEasyGrid(cols, rows, density, rng);
+  } else {
+    grid = [];
+    for (let r = 0; r < rows; r++) {
+      const row = [];
+      for (let c = 0; c < cols; c++) row.push(rng.random() < density);
+      grid.push(row);
+    }
+  }
+  if (!easy) {
+    for (let r = 0; r < rows; r++) {
+      if (!grid[r].some(v => v)) grid[r][rng.randint(0, cols - 1)] = true;
+    }
+    for (let c = 0; c < cols; c++) {
+      if (!grid.some(row => row[c])) grid[rng.randint(0, rows - 1)][c] = true;
+    }
+  }
+  return grid;
+}
+
+function shufflePuzzles(puzzles, rng) {
+  const bySize = {};
+  for (const p of puzzles) {
+    const key = `${p.cols},${p.rows}`;
+    if (!bySize[key]) bySize[key] = [];
+    bySize[key].push(p);
+  }
+  const newGrids = {};
+  for (const group of Object.values(bySize)) {
+    const grids = group.map(p => p.grid);
+    rng.shuffle(grids);
+    group.forEach((p, i) => { newGrids[p.index] = grids[i]; });
+  }
+  return newGrids;
+}
+
+function randomizeAllGrids(puzzles, rng, density, easy) {
+  const newGrids = {};
+  for (const p of puzzles) {
+    newGrids[p.index] = generateRandomGrid(p.cols, p.rows, density, rng, easy);
+  }
+  return newGrids;
+}
+
+
+// ============================================================
+// ROM Patches (port of apply_unlock_rom_patch, apply_no_timer_patch)
+// ============================================================
+function applyUnlockRomPatch(romData) {
+  const TABLE_DATA = [];
+  for (let i = 0; i < 12; i++) { TABLE_DATA.push(0xBB, 0xBB); }
+
+  romData[0x3492] = 0x4C; romData[0x3493] = 0x20; romData[0x3494] = 0xF2;
+
+  const patch = [];
+  patch.push(0xAD, 0xA6, 0x07); // LDA $07A6
+  patch.push(0xD0);              // BNE
+  const fillStart = patch.length;
+  patch.push(0x00);              // placeholder
+
+  for (let i = 0; i < TABLE_DATA.length; i += 2) {
+    const lo = TABLE_DATA[i], hi = TABLE_DATA[i+1];
+    const word = lo | (hi << 8);
+    const addr = 0x07A6 + i;
+    if (word === 0) {
+      patch.push(0x9C, addr & 0xFF, (addr >> 8) & 0xFF);
+    } else {
+      patch.push(0xA9, lo, hi);
+      patch.push(0x8D, addr & 0xFF, (addr >> 8) & 0xFF);
+    }
+  }
+
+  patch[fillStart] = patch.length - fillStart - 1;
+  patch.push(0xBD, 0xA6, 0x07); // LDA $07A6,X
+  patch.push(0x4C, 0x95, 0x34); // JMP $3495
+
+  for (let i = 0; i < patch.length; i++) romData[0xF220 + i] = patch[i];
+
+  // BGM nibble mask: AND #$0F → AND #$03
+  romData[0x4292] = 0x03;
+  romData[0x42A4] = 0x03;
+}
+
+function applyNoTimerPatch(romData) {
+  romData[0x0155] = 0xEA; romData[0x0156] = 0xEA; romData[0x0157] = 0xEA;
+  const patch = [
+    0x9C, 0xE6, 0x0F,
+    0x9C, 0xDE, 0x0F,
+    0xA9, 0x12, 0x0A,
+    0x8D, 0xE2, 0x0F,
+    0xA9, 0x12, 0x12,
+    0x8D, 0xE4, 0x0F,
+    0x6B,
+  ];
+  while (patch.length < 25) patch.push(0xEA);
+  for (let i = 0; i < patch.length; i++) romData[0x8675 + i] = patch[i];
+}
+
+
+// ============================================================
+// Spoiler Log
+// ============================================================
+function generateSpoilerLog(puzzles, newGrids) {
+  const lines = [];
+  lines.push("Mario's Super Picross \u2014 Puzzle Solutions");
+  lines.push("=".repeat(50) + "\n");
+  if (newGrids) lines.push("** RANDOMIZED **\n");
+  let currentMode = null, currentLevel = null;
+  for (const p of puzzles) {
+    if (p.mode !== currentMode) {
+      currentMode = p.mode; currentLevel = null;
+      lines.push("\n" + "=".repeat(50));
+      lines.push("  " + p.mode.toUpperCase() + " MODE");
+      lines.push("=".repeat(50) + "\n");
+    }
+    if (p.level !== currentLevel) {
+      currentLevel = p.level;
+      lines.push(`--- Level ${p.level + 1} ---\n`);
+    }
+    const grid = newGrids ? newGrids[p.index] : p.grid;
+    const cellCount = grid.reduce((s, row) => s + row.filter(c => c).length, 0);
+    lines.push(`Puzzle ${p.level + 1}-${String.fromCharCode(65 + p.position)} [${p.sizeName}, ${cellCount} cells]`);
+    for (const row of grid) lines.push("  " + row.map(c => c ? "#" : ".").join(" "));
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+
+// ============================================================
+// Difficulty Analysis
+// ============================================================
+function getClues(line) {
+  const clues = []; let run = 0;
+  for (const c of line) { if (c) run++; else if (run) { clues.push(run); run = 0; } }
+  if (run) clues.push(run);
+  return clues.length ? clues : [0];
+}
+
+function lineOverlap(clues, length) {
+  if (clues.length === 1 && clues[0] === 0) return length;
+  const minSpace = clues.reduce((a, b) => a + b, 0) + clues.length - 1;
+  const slack = length - minSpace;
+  if (slack < 0) return 0;
+  if (slack === 0) return length;
+  return clues.reduce((s, c) => s + Math.max(0, c - slack), 0);
+}
+
+function analyzeGrid(grid, cols, rows) {
+  const rowClues = []; for (let r = 0; r < rows; r++) rowClues.push(getClues(grid[r]));
+  const colClues = []; for (let c = 0; c < cols; c++) {
+    const col = []; for (let r = 0; r < rows; r++) col.push(grid[r][c]);
+    colClues.push(getClues(col));
+  }
+  const allClues = [...rowClues, ...colClues];
+  const totalCells = rows * cols;
+  const totalLines = rows + cols;
+  let rowDet = 0; for (const rc of rowClues) rowDet += lineOverlap(rc, cols);
+  let colDet = 0; for (const cc of colClues) colDet += lineOverlap(cc, rows);
+  const infoRatio = (rowDet + colDet) / (totalCells * 2);
+  const allNums = []; for (const cl of allClues) for (const c of cl) if (c > 0) allNums.push(c);
+  const avgClue = allNums.length ? allNums.reduce((a, b) => a + b, 0) / allNums.length : 0;
+  let useless = 0;
+  allClues.forEach((cl, i) => {
+    if (cl.every(c => c === 1) && lineOverlap(cl, i < rows ? cols : rows) === 0) useless++;
+  });
+  const density = grid.reduce((s, row) => s + row.filter(c => c).length, 0) / totalCells;
+  let difficulty = Math.round(100 * (1 - infoRatio) * (0.3 + 0.7 * (1 - avgClue / Math.max(cols, rows))));
+  difficulty = Math.max(0, Math.min(100, difficulty));
+  return { difficulty, infoRatio, avgClue, useless, totalLines, density };
+}
+
+function printAnalysis(puzzles, grids, log) {
+  const results = puzzles.map(p => {
+    const grid = grids ? grids[p.index] : p.grid;
+    return [p, analyzeGrid(grid, p.cols, p.rows)];
+  });
+  const buckets = [[0,20,'Trivial (0-20)'],[21,40,'Easy    (21-40)'],[41,60,'Medium  (41-60)'],
+                   [61,80,'Hard    (61-80)'],[81,100,'Brutal  (81-100)']];
+  log("\n=== DIFFICULTY DISTRIBUTION ===");
+  for (const [lo, hi, label] of buckets) {
+    const group = results.filter(([,a]) => a.difficulty >= lo && a.difficulty <= hi);
+    const sizes = {};
+    group.forEach(([p]) => { sizes[p.sizeName] = (sizes[p.sizeName]||0) + 1; });
+    const sizeStr = Object.entries(sizes).sort().map(([k,v]) => `${v}x ${k}`).join(', ') || 'none';
+    log(`  ${label}: ${String(group.length).padStart(3)}  (${sizeStr})`);
+  }
+  results.sort((a, b) => b[1].difficulty - a[1].difficulty);
+  log("\n=== TOP 10 HARDEST ===");
+  for (const [p, a] of results.slice(0, 10)) {
+    const name = `${p.level+1}-${String.fromCharCode(65+p.position)}`;
+    log(`  ${name.padEnd(8)} [${p.sizeName}]  diff=${String(a.difficulty).padStart(3)}  ` +
+        `info=${(a.infoRatio*100).toFixed(1)}%  avg_clue=${a.avgClue.toFixed(1)}  ` +
+        `useless=${a.useless}/${a.totalLines}  density=${(a.density*100).toFixed(0)}%`);
+  }
+  const suspect = results.filter(([,a]) => a.infoRatio < 0.05);
+  if (suspect.length) {
+    log(`\n=== LIKELY REQUIRES GUESSING (${suspect.length}) ===`);
+    for (const [p, a] of suspect.slice(0, 15)) {
+      const name = `${p.level+1}-${String.fromCharCode(65+p.position)}`;
+      log(`  ${name.padEnd(8)} [${p.sizeName}]  diff=${String(a.difficulty).padStart(3)}  ` +
+          `info=${(a.infoRatio*100).toFixed(1)}%  avg_clue=${a.avgClue.toFixed(1)}`);
+    }
+  } else {
+    log("\n  No puzzles flagged as likely requiring guessing.");
+  }
+  results.sort((a, b) => a[1].difficulty - b[1].difficulty);
+  log("\n=== 5 EASIEST ===");
+  for (const [p, a] of results.slice(0, 5)) {
+    const name = `${p.level+1}-${String.fromCharCode(65+p.position)}`;
+    log(`  ${name.padEnd(8)} [${p.sizeName}]  diff=${String(a.difficulty).padStart(3)}  ` +
+        `info=${(a.infoRatio*100).toFixed(1)}%  avg_clue=${a.avgClue.toFixed(1)}`);
+  }
+}
+
+
+// ============================================================
+// UI
+// ============================================================
+let loadedRom = null;
+
+document.getElementById('unlockAll').addEventListener('change', (e) => {
+  const details = document.getElementById('knownIssues');
+  if (e.target.checked) details.open = true;
+});
+
+document.getElementById('density').addEventListener('input', (e) => {
+  const warn = document.getElementById('densityWarning');
+  warn.style.display = parseFloat(e.target.value) < 0.57 ? 'block' : 'none';
+});
+
+document.getElementById('romFile').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const buf = await file.arrayBuffer();
+  loadedRom = new Uint8Array(buf);
+  const info = document.getElementById('romInfo');
+  info.textContent = `${file.name} (${loadedRom.length.toLocaleString()} bytes)`;
+  document.getElementById('generate').disabled = false;
+});
+
+document.getElementById('generate').addEventListener('click', async () => {
+  const btn = document.getElementById('generate');
+  const output = document.getElementById('output');
+  const downloads = document.getElementById('downloads');
+  const hashInfo = document.getElementById('hashInfo');
+  btn.disabled = true; btn.textContent = 'Generating...';
+  output.textContent = ''; downloads.innerHTML = ''; hashInfo.textContent = '';
+
+  // Defer to let UI update
+  await new Promise(r => setTimeout(r, 10));
+
+  const log = (s) => { output.textContent += s + '\n'; };
+
+  try {
+    const seed = parseInt(document.getElementById('seed').value) || 42;
+    const density = parseFloat(document.getElementById('density').value) || 0.57;
+    const randomGrids = document.getElementById('randomGrids').checked;
+    const easy = document.getElementById('easy').checked;
+    const unlockAll = document.getElementById('unlockAll').checked;
+    const noTimer = document.getElementById('noTimer').checked;
+    const analyze = document.getElementById('analyze').checked;
+
+    const romData = new Uint8Array(loadedRom);
+    log(`ROM: ${romData.length.toLocaleString()} bytes`);
+
+    const puzzles = readAllPuzzles(romData);
+    log(`Parsed ${puzzles.length} puzzles`);
+    const sizes = {};
+    puzzles.forEach(p => { sizes[p.sizeName] = (sizes[p.sizeName]||0) + 1; });
+    log(`Sizes: ${JSON.stringify(sizes)}`);
+
+    let newGrids = null;
+    if (seed !== 0) {
+      const rng = new PythonRandom(seed);
+      if (randomGrids) {
+        const mode = easy ? "easy (long runs)" : "hard (scattered)";
+        log(`\nSeed ${seed} \u2014 generating random grids \u2014 ${mode} (density=${density})`);
+        newGrids = randomizeAllGrids(puzzles, rng, density, easy);
+      } else {
+        log(`\nSeed ${seed} \u2014 shuffling puzzles within size groups`);
+        newGrids = shufflePuzzles(puzzles, rng);
+      }
+      for (const p of puzzles) writePuzzleSolution(romData, p, newGrids[p.index]);
+      fixRomChecksum(romData);
+      log("ROM checksum updated");
+    }
+
+    if (noTimer) { applyNoTimerPatch(romData); fixRomChecksum(romData); log("  ROM patched: timer frozen"); }
+    if (unlockAll) { applyUnlockRomPatch(romData); fixRomChecksum(romData); log("  ROM patched: all levels unlocked"); }
+
+    // Generate spoiler log
+    const spoilerText = generateSpoilerLog(puzzles, newGrids);
+
+    // Summary
+    if (newGrids) {
+      let totalCells = 0;
+      for (const p of puzzles) totalCells += newGrids[p.index].reduce((s, row) => s + row.filter(c => c).length, 0);
+      log(`\nTotal solution cells across all puzzles: ${totalCells}`);
+    }
+
+    // Difficulty analysis
+    if (analyze) printAnalysis(puzzles, newGrids, log);
+
+    // SHA256
+    const hashBuf = await crypto.subtle.digest('SHA-256', romData);
+    const hashArr = Array.from(new Uint8Array(hashBuf));
+    const hashHex = hashArr.map(b => b.toString(16).padStart(2, '0')).join('');
+    hashInfo.textContent = `ROM SHA-256: ${hashHex}`;
+
+    // Download links
+    const romBlob = new Blob([romData], { type: 'application/octet-stream' });
+    const romUrl = URL.createObjectURL(romBlob);
+    const romName = seed === 0 ? 'picross_original.sfc' : `picross_randomized_${seed}.sfc`;
+
+    const spoilerBlob = new Blob([spoilerText], { type: 'text/plain' });
+    const spoilerUrl = URL.createObjectURL(spoilerBlob);
+    const spoilerName = seed === 0 ? 'picross_original_spoiler.txt' : `picross_randomized_${seed}_spoiler.txt`;
+
+    downloads.innerHTML = `<a href="${romUrl}" download="${romName}">Download ROM</a>` +
+                          `<a href="${spoilerUrl}" download="${spoilerName}">Download Spoiler Log</a>`;
+
+  } catch (err) {
+    log(`\nERROR: ${err.message}\n${err.stack}`);
+  }
+
+  btn.disabled = false; btn.textContent = 'Generate';
+});
+</script>
+</body>
+</html>
