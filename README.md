@@ -1,5 +1,7 @@
 # Mario's Super Picross Randomizer
 
+![Mario's Super Picross Randomizer](picross_randomizer.png)
+
 A puzzle randomizer for **Mario's Super Picross** (Super Famicom, 1995). Generates new solutions for all 302 puzzles while preserving the original game engine, clue rendering, and grid sizes.
 
 Every seed produces a unique, complete set of puzzles. The game recomputes clue numbers at runtime from the solution data, so randomized puzzles are fully playable out of the box.
